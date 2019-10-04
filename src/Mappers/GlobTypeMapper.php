@@ -288,7 +288,7 @@ final class GlobTypeMapper implements TypeMapperInterface
     {
         if ($this->classes === null) {
             $this->classes = [];
-            $explorer = new GlobClassExplorer($this->namespace, $this->cache, $this->globTtl, ClassNameMapper::createFromComposerFile(null, null, true), $this->recursive);
+            $explorer = new GlobClassExplorer($this->namespace, $this->cache, $this->globTtl, ClassNameMapper::createFromComposerAutoload(null, null, true), $this->recursive);
             $classes = $explorer->getClasses();
             foreach ($classes as $className) {
                 if (!\class_exists($className)) {
