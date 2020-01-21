@@ -1,15 +1,24 @@
 <?php
 
+declare(strict_types=1);
 
 namespace TheCodingMachine\GraphQLite;
 
+use GraphQL\Type\Definition\FieldDefinition;
 use Mouf\Composer\ClassNameMapper;
 use Psr\Container\ContainerInterface;
 use Psr\SimpleCache\CacheInterface;
-use Symfony\Component\Lock\Lock;
+use ReflectionClass;
+use ReflectionMethod;
+use Symfony\Component\Cache\Adapter\Psr16Adapter;
+use Symfony\Contracts\Cache\CacheInterface as CacheContractInterface;
 use TheCodingMachine\ClassExplorer\Glob\GlobClassExplorer;
-use TheCodingMachine\GraphQLite\Mappers\RecursiveTypeMapperInterface;
-use Symfony\Component\Lock\Factory as LockFactory;
+use TheCodingMachine\GraphQLite\Annotations\Mutation;
+use TheCodingMachine\GraphQLite\Annotations\Query;
+use Webmozart\Assert\Assert;
+use function class_exists;
+use function interface_exists;
+use function str_replace;
 
 /**
  * Scans all the classes in a given namespace of the main project (not the vendor directory).
@@ -19,73 +28,53 @@ use Symfony\Component\Lock\Factory as LockFactory;
  */
 final class GlobControllerQueryProvider implements QueryProviderInterface
 {
-    /**
-     * @var string
-     */
+    /** @var string */
     private $namespace;
-    /**
-     * @var CacheInterface
-     */
+    /** @var CacheInterface */
     private $cache;
-    /**
-     * @var int|null
-     */
+    /** @var int|null */
     private $cacheTtl;
-    /**
-     * @var array<string,string>|null
-     */
+    /** @var array<string,string>|null */
     private $instancesList;
-    /**
-     * @var ContainerInterface
-     */
+    /** @var ContainerInterface */
     private $container;
-    /**
-     * @var AggregateControllerQueryProvider
-     */
+    /** @var ClassNameMapper */
+    private $classNameMapper;
+    /** @var AggregateControllerQueryProvider */
     private $aggregateControllerQueryProvider;
-    /**
-     * @var FieldsBuilderFactory
-     */
-    private $fieldsBuilderFactory;
-    /**
-     * @var RecursiveTypeMapperInterface
-     */
-    private $recursiveTypeMapper;
-    /**
-     * @var bool
-     */
+    /** @var FieldsBuilder */
+    private $fieldsBuilder;
+    /** @var bool */
     private $recursive;
-    /**
-     * @var LockFactory
-     */
-    private $lockFactory;
+    /** @var CacheContractInterface */
+    private $cacheContract;
+    /** @var AnnotationReader */
+    private $annotationReader;
 
     /**
-     * @param string $namespace The namespace that contains the GraphQL types (they must have a `@Type` annotation)
-     * @param FieldsBuilderFactory $fieldsBuilderFactory
-     * @param RecursiveTypeMapperInterface $recursiveTypeMapper
+     * @param string             $namespace The namespace that contains the GraphQL types (they must have a `@Type` annotation)
      * @param ContainerInterface $container The container we will fetch controllers from.
-     * @param CacheInterface $cache
-     * @param int|null $cacheTtl
-     * @param bool $recursive Whether subnamespaces of $namespace must be analyzed.
+     * @param bool               $recursive Whether subnamespaces of $namespace must be analyzed.
      */
-    public function __construct(string $namespace, FieldsBuilderFactory $fieldsBuilderFactory, RecursiveTypeMapperInterface $recursiveTypeMapper, ContainerInterface $container, LockFactory $lockFactory, CacheInterface $cache, ?int $cacheTtl = null, bool $recursive = true)
+    public function __construct(string $namespace, FieldsBuilder $fieldsBuilder, ContainerInterface $container, AnnotationReader $annotationReader, CacheInterface $cache, ?ClassNameMapper $classNameMapper = null, ?int $cacheTtl = null, bool $recursive = true)
     {
-        $this->namespace = $namespace;
-        $this->container = $container;
-        $this->cache = $cache;
-        $this->cacheTtl = $cacheTtl;
-        $this->fieldsBuilderFactory = $fieldsBuilderFactory;
-        $this->recursiveTypeMapper = $recursiveTypeMapper;
-        $this->recursive = $recursive;
-        $this->lockFactory = $lockFactory;
+        $this->namespace       = $namespace;
+        $this->container       = $container;
+        $this->classNameMapper = $classNameMapper ?? ClassNameMapper::createFromComposerAutoload(null, null, true);
+        $this->cache           = $cache;
+        $this->cacheContract   = new Psr16Adapter($this->cache, str_replace(['\\', '{', '}', '(', ')', '/', '@', ':'], '_', $namespace), $cacheTtl ?? 0);
+        $this->cacheTtl        = $cacheTtl;
+        $this->fieldsBuilder   = $fieldsBuilder;
+        $this->recursive       = $recursive;
+        $this->annotationReader = $annotationReader;
     }
 
     private function getAggregateControllerQueryProvider(): AggregateControllerQueryProvider
     {
         if ($this->aggregateControllerQueryProvider === null) {
-            $this->aggregateControllerQueryProvider = new AggregateControllerQueryProvider($this->getInstancesList(), $this->fieldsBuilderFactory, $this->recursiveTypeMapper, $this->container);
+            $this->aggregateControllerQueryProvider = new AggregateControllerQueryProvider($this->getInstancesList(), $this->fieldsBuilder, $this->container);
         }
+
         return $this->aggregateControllerQueryProvider;
     }
 
@@ -97,27 +86,12 @@ final class GlobControllerQueryProvider implements QueryProviderInterface
     private function getInstancesList(): array
     {
         if ($this->instancesList === null) {
-            $key = 'globQueryProvider_'.str_replace('\\', '_', $this->namespace);
-            $this->instancesList = $this->cache->get($key);
-            if ($this->instancesList === null) {
-                $lock = $this->lockFactory->createLock('buildInstanceList_'.$this->namespace, 5);
-                if (!$lock->acquire()) {
-                    // Lock is being held right now. Generation is happening.
-                    // Let's wait and fetch the result from the cache.
-                    $lock->acquire(true);
-                    $lock->release();
-                    return $this->getInstancesList();
-                }
-                $lock->acquire(true);
-                try {
-                    return $this->buildInstancesList();
-                } finally {
-                    $lock->release();
-                }
-
-                $this->cache->set($key, $this->instancesList, $this->cacheTtl);
-            }
+            $this->instancesList = $this->cacheContract->get('globQueryProvider', function () {
+                return $this->buildInstancesList();
+            });
+            Assert::isArray($this->instancesList, 'The instance list returned is not an array. There might be an issue with your PSR-16 cache implementation.');
         }
+
         return $this->instancesList;
     }
 
@@ -126,26 +100,51 @@ final class GlobControllerQueryProvider implements QueryProviderInterface
      */
     private function buildInstancesList(): array
     {
-        $explorer = new GlobClassExplorer($this->namespace, $this->cache, $this->cacheTtl, ClassNameMapper::createFromComposerAutoload(null, null, true), $this->recursive);
-        $classes = $explorer->getClasses();
+        $explorer  = new GlobClassExplorer($this->namespace, $this->cache, $this->cacheTtl, $this->classNameMapper, $this->recursive);
+        $classes   = $explorer->getClasses();
+
         $instances = [];
         foreach ($classes as $className) {
-            if (!\class_exists($className)) {
+            if (! class_exists($className) && ! interface_exists($className)) {
                 continue;
             }
-            $refClass = new \ReflectionClass($className);
-            if (!$refClass->isInstantiable()) {
+            $refClass = new ReflectionClass($className);
+            if (! $refClass->isInstantiable()) {
                 continue;
             }
-            if ($this->container->has($className)) {
-                $instances[] = $className;
+            if (! $this->hasQueriesOrMutations($refClass)) {
+                continue;
             }
+            if (! $this->container->has($className)) {
+                continue;
+            }
+
+            $instances[] = $className;
         }
+
         return $instances;
     }
 
     /**
-     * @return QueryField[]
+     * @param ReflectionClass<object> $reflectionClass
+     */
+    private function hasQueriesOrMutations(ReflectionClass $reflectionClass): bool
+    {
+        foreach ($reflectionClass->getMethods(ReflectionMethod::IS_PUBLIC) as $refMethod) {
+            $queryAnnotation = $this->annotationReader->getRequestAnnotation($refMethod, Query::class);
+            if ($queryAnnotation !== null) {
+                return true;
+            }
+            $mutationAnnotation = $this->annotationReader->getRequestAnnotation($refMethod, Mutation::class);
+            if ($mutationAnnotation !== null) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * @return FieldDefinition[]
      */
     public function getQueries(): array
     {
@@ -153,7 +152,7 @@ final class GlobControllerQueryProvider implements QueryProviderInterface
     }
 
     /**
-     * @return QueryField[]
+     * @return FieldDefinition[]
      */
     public function getMutations(): array
     {

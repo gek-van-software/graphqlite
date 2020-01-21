@@ -7,7 +7,7 @@ use PHPUnit\Framework\TestCase;
 class SchemaTest extends AbstractQueryProviderTest
 {
 
-    public function testEmptyQuery()
+    public function testEmptyQuery(): void
     {
         $queryProvider = new class implements QueryProviderInterface {
             public function getQueries(): array
@@ -21,7 +21,7 @@ class SchemaTest extends AbstractQueryProviderTest
             }
         };
 
-        $schema = new Schema($queryProvider, $this->getTypeMapper(), $this->getTypeResolver());
+        $schema = new Schema($queryProvider, $this->getTypeMapper(), $this->getTypeResolver(), $this->getRootTypeMapper());
 
         $fields = $schema->getQueryType()->getFields();
         $this->assertArrayHasKey('dummyQuery', $fields);

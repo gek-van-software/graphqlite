@@ -1,39 +1,24 @@
 <?php
-declare(strict_types = 1);
+
+declare(strict_types=1);
 
 namespace TheCodingMachine\GraphQLite\Types;
-
 
 use DateTime;
 use DateTimeImmutable;
 use Exception;
 use GraphQL\Error\InvariantViolation;
-use GraphQL\Language\AST\Node;
 use GraphQL\Language\AST\StringValueNode;
 use GraphQL\Type\Definition\ScalarType;
 use GraphQL\Utils\Utils;
+use TheCodingMachine\GraphQLite\GraphQLRuntimeException;
 
 class DateTimeType extends ScalarType
 {
-    private static $instance;
-
-    public static function getInstance(): self
-    {
-        if (self::$instance === null) {
-            self::$instance = new self();
-        }
-        return self::$instance;
-    }
-
-
-    /**
-     * @var string
-     */
+    /** @var string */
     public $name = 'DateTime';
 
-    /**
-     * @var string
-     */
+    /** @var string */
     public $description = 'The `DateTime` scalar type represents time data, represented as an ISO-8601 encoded UTC date string.';
 
     /**
@@ -56,6 +41,11 @@ class DateTimeType extends ScalarType
         if ($value === null) {
             return null;
         }
+
+        if ($value instanceof DateTimeImmutable) {
+            return $value;
+        }
+
         return new DateTimeImmutable($value);
     }
 
@@ -64,18 +54,21 @@ class DateTimeType extends ScalarType
      *
      * In the case of an invalid node or value this method must throw an Exception
      *
-     * @param Node $valueNode
-     * @param array|null $variables
+     * @param array<string, mixed>|null $variables
+     *
      * @return mixed
-     * @throws \Exception
+     *
+     * @throws Exception
+     *
+     * @phpcsSuppress SlevomatCodingStandard.TypeHints.ParameterTypeHint
      */
-    public function parseLiteral($valueNode, array $variables = null)
+    public function parseLiteral($valueNode, ?array $variables = null)
     {
         if ($valueNode instanceof StringValueNode) {
             return $valueNode->value;
         }
 
         // Intentionally without message, as all information already in wrapped Exception
-        throw new Exception();
+        throw new GraphQLRuntimeException();
     }
 }

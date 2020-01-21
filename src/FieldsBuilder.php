@@ -1,146 +1,120 @@
 <?php
 
+declare(strict_types=1);
 
 namespace TheCodingMachine\GraphQLite;
 
-use function array_merge;
-use function get_parent_class;
-use GraphQL\Type\Definition\InputType;
-use GraphQL\Type\Definition\ListOfType;
-use GraphQL\Type\Definition\NonNull;
+use GraphQL\Type\Definition\FieldDefinition;
 use GraphQL\Type\Definition\OutputType;
-use GraphQL\Type\Definition\WrappingType;
-use GraphQL\Upload\UploadType;
-use phpDocumentor\Reflection\Fqsen;
-use phpDocumentor\Reflection\Types\Nullable;
-use phpDocumentor\Reflection\Types\Self_;
-use Psr\Http\Message\UploadedFileInterface;
+use GraphQL\Type\Definition\Type;
+use phpDocumentor\Reflection\DocBlock;
+use ReflectionClass;
+use ReflectionException;
 use ReflectionMethod;
-use function sprintf;
+use ReflectionParameter;
+use TheCodingMachine\GraphQLite\Annotations\Exceptions\InvalidParameterException;
 use TheCodingMachine\GraphQLite\Annotations\Field;
+use TheCodingMachine\GraphQLite\Annotations\Mutation;
+use TheCodingMachine\GraphQLite\Annotations\ParameterAnnotations;
+use TheCodingMachine\GraphQLite\Annotations\Query;
 use TheCodingMachine\GraphQLite\Annotations\SourceFieldInterface;
-use TheCodingMachine\GraphQLite\Hydrators\HydratorInterface;
+use TheCodingMachine\GraphQLite\Mappers\CannotMapTypeException;
 use TheCodingMachine\GraphQLite\Mappers\CannotMapTypeExceptionInterface;
+use TheCodingMachine\GraphQLite\Mappers\DuplicateMappingException;
+use TheCodingMachine\GraphQLite\Mappers\Parameters\ParameterMiddlewareInterface;
+use TheCodingMachine\GraphQLite\Mappers\Parameters\TypeHandler;
+use TheCodingMachine\GraphQLite\Mappers\RecursiveTypeMapperInterface;
+use TheCodingMachine\GraphQLite\Mappers\Root\RootTypeMapperInterface;
+use TheCodingMachine\GraphQLite\Middlewares\FieldHandlerInterface;
+use TheCodingMachine\GraphQLite\Middlewares\FieldMiddlewareInterface;
+use TheCodingMachine\GraphQLite\Parameters\ParameterInterface;
 use TheCodingMachine\GraphQLite\Reflection\CachedDocBlockFactory;
 use TheCodingMachine\GraphQLite\Types\ArgumentResolver;
-use TheCodingMachine\GraphQLite\Types\CustomTypesRegistry;
-use TheCodingMachine\GraphQLite\Types\ID;
+use TheCodingMachine\GraphQLite\Types\MutableObjectType;
 use TheCodingMachine\GraphQLite\Types\TypeResolver;
-use TheCodingMachine\GraphQLite\Types\UnionType;
-use Iterator;
-use IteratorAggregate;
-use phpDocumentor\Reflection\DocBlock;
-use phpDocumentor\Reflection\DocBlock\Tags\Return_;
-use phpDocumentor\Reflection\Type;
-use phpDocumentor\Reflection\Types\Array_;
-use phpDocumentor\Reflection\Types\Boolean;
-use phpDocumentor\Reflection\Types\Compound;
-use phpDocumentor\Reflection\Types\Float_;
-use phpDocumentor\Reflection\Types\Iterable_;
-use phpDocumentor\Reflection\Types\Mixed_;
-use phpDocumentor\Reflection\Types\Null_;
-use phpDocumentor\Reflection\Types\Object_;
-use phpDocumentor\Reflection\Types\String_;
-use phpDocumentor\Reflection\Types\Integer;
-use ReflectionClass;
-use TheCodingMachine\GraphQLite\Annotations\SourceField;
-use TheCodingMachine\GraphQLite\Annotations\Logged;
-use TheCodingMachine\GraphQLite\Annotations\Mutation;
-use TheCodingMachine\GraphQLite\Annotations\Query;
-use TheCodingMachine\GraphQLite\Mappers\CannotMapTypeException;
-use TheCodingMachine\GraphQLite\Mappers\RecursiveTypeMapperInterface;
-use TheCodingMachine\GraphQLite\Reflection\CommentParser;
-use TheCodingMachine\GraphQLite\Security\AuthenticationServiceInterface;
-use TheCodingMachine\GraphQLite\Security\AuthorizationServiceInterface;
-use TheCodingMachine\GraphQLite\Types\DateTimeType;
-use GraphQL\Type\Definition\Type as GraphQLType;
+use Webmozart\Assert\Assert;
+use function array_merge;
+use function array_shift;
+use function assert;
+use function get_class;
+use function get_parent_class;
+use function is_string;
+use function reset;
+use function ucfirst;
 
 /**
  * A class in charge if returning list of fields for queries / mutations / entities / input types
  */
 class FieldsBuilder
 {
-    /**
-     * @var AnnotationReader
-     */
+    /** @var AnnotationReader */
     private $annotationReader;
-    /**
-     * @var RecursiveTypeMapperInterface
-     */
-    private $typeMapper;
-    /**
-     * @var ArgumentResolver
-     */
-    private $argumentResolver;
-    /**
-     * @var AuthenticationServiceInterface
-     */
-    private $authenticationService;
-    /**
-     * @var AuthorizationServiceInterface
-     */
-    private $authorizationService;
-    /**
-     * @var CachedDocBlockFactory
-     */
+    /** @var RecursiveTypeMapperInterface */
+    private $recursiveTypeMapper;
+    /** @var CachedDocBlockFactory */
     private $cachedDocBlockFactory;
-    /**
-     * @var TypeResolver
-     */
+    /** @var TypeResolver */
     private $typeResolver;
-    /**
-     * @var NamingStrategyInterface
-     */
+    /** @var NamingStrategyInterface */
     private $namingStrategy;
+    /** @var TypeHandler */
+    private $typeMapper;
+    /** @var ParameterMiddlewareInterface */
+    private $parameterMapper;
+    /** @var FieldMiddlewareInterface */
+    private $fieldMiddleware;
 
-    public function __construct(AnnotationReader $annotationReader, RecursiveTypeMapperInterface $typeMapper,
-                                ArgumentResolver $argumentResolver, AuthenticationServiceInterface $authenticationService,
-                                AuthorizationServiceInterface $authorizationService, TypeResolver $typeResolver,
-                                CachedDocBlockFactory $cachedDocBlockFactory, NamingStrategyInterface $namingStrategy)
-    {
-        $this->annotationReader = $annotationReader;
-        $this->typeMapper = $typeMapper;
-        $this->argumentResolver = $argumentResolver;
-        $this->authenticationService = $authenticationService;
-        $this->authorizationService = $authorizationService;
-        $this->typeResolver = $typeResolver;
+    public function __construct(
+        AnnotationReader $annotationReader,
+        RecursiveTypeMapperInterface $typeMapper,
+        ArgumentResolver $argumentResolver,
+        TypeResolver $typeResolver,
+        CachedDocBlockFactory $cachedDocBlockFactory,
+        NamingStrategyInterface $namingStrategy,
+        RootTypeMapperInterface $rootTypeMapper,
+        ParameterMiddlewareInterface $parameterMapper,
+        FieldMiddlewareInterface $fieldMiddleware
+    ) {
+        $this->annotationReader      = $annotationReader;
+        $this->recursiveTypeMapper   = $typeMapper;
+        $this->typeResolver          = $typeResolver;
         $this->cachedDocBlockFactory = $cachedDocBlockFactory;
-        $this->namingStrategy = $namingStrategy;
-    }
-
-    // TODO: Add RecursiveTypeMapper in the list of parameters for getQueries and REMOVE the ControllerQueryProviderFactory.
-
-    /**
-     * @param object $controller
-     * @return QueryField[]
-     * @throws \ReflectionException
-     */
-    public function getQueries($controller): array
-    {
-        return $this->getFieldsByAnnotations($controller,Query::class, false);
+        $this->namingStrategy        = $namingStrategy;
+        $this->typeMapper            = new TypeHandler($argumentResolver, $rootTypeMapper, $typeResolver);
+        $this->parameterMapper       = $parameterMapper;
+        $this->fieldMiddleware = $fieldMiddleware;
     }
 
     /**
-     * @param object $controller
-     * @return QueryField[]
-     * @throws \ReflectionException
+     * @return array<string, FieldDefinition>
+     *
+     * @throws ReflectionException
      */
-    public function getMutations($controller): array
+    public function getQueries(object $controller): array
     {
-        return $this->getFieldsByAnnotations($controller,Mutation::class, false);
+        return $this->getFieldsByAnnotations($controller, Query::class, false);
     }
 
     /**
-     * @return array<string, QueryField> QueryField indexed by name.
+     * @return array<string, FieldDefinition>
+     *
+     * @throws ReflectionException
      */
-    public function getFields($controller): array
+    public function getMutations(object $controller): array
     {
+        return $this->getFieldsByAnnotations($controller, Mutation::class, false);
+    }
 
+    /**
+     * @return array<string, FieldDefinition> QueryField indexed by name.
+     */
+    public function getFields(object $controller): array
+    {
         $fieldAnnotations = $this->getFieldsByAnnotations($controller, Annotations\Field::class, true);
 
-        $refClass = new \ReflectionClass($controller);
+        $refClass = new ReflectionClass($controller);
 
-        /** @var SourceField[] $sourceFields */
+        /** @var SourceFieldInterface[] $sourceFields */
         $sourceFields = $this->annotationReader->getSourceFields($refClass);
 
         if ($controller instanceof FromSourceFieldsInterface) {
@@ -149,11 +123,7 @@ class FieldsBuilder
 
         $fieldsFromSourceFields = $this->getQueryFieldsFromSourceFields($sourceFields, $refClass);
 
-
-        $fields = [];
-        foreach ($fieldAnnotations as $field) {
-            $fields[$field->name] = $field;
-        }
+        $fields = $fieldAnnotations;
         foreach ($fieldsFromSourceFields as $field) {
             $fields[$field->name] = $field;
         }
@@ -164,23 +134,22 @@ class FieldsBuilder
     /**
      * Track Field annotation in a self targeted type
      *
-     * @return array<string, QueryField> QueryField indexed by name.
+     * @param class-string<object> $className
+     *
+     * @return array<string, FieldDefinition> QueryField indexed by name.
      */
     public function getSelfFields(string $className): array
     {
-        $fieldAnnotations = $this->getFieldsByAnnotations(null, Annotations\Field::class, false, $className);
+        $fieldAnnotations = $this->getFieldsByAnnotations($className, Annotations\Field::class, false);
 
-        $refClass = new \ReflectionClass($className);
+        $refClass = new ReflectionClass($className);
 
-        /** @var SourceField[] $sourceFields */
+        /** @var SourceFieldInterface[] $sourceFields */
         $sourceFields = $this->annotationReader->getSourceFields($refClass);
 
         $fieldsFromSourceFields = $this->getQueryFieldsFromSourceFields($sourceFields, $refClass);
 
-        $fields = [];
-        foreach ($fieldAnnotations as $field) {
-            $fields[$field->name] = $field;
-        }
+        $fields = $fieldAnnotations;
         foreach ($fieldsFromSourceFields as $field) {
             $fields[$field->name] = $field;
         }
@@ -190,46 +159,65 @@ class FieldsBuilder
 
     /**
      * @param ReflectionMethod $refMethod A method annotated with a Factory annotation.
-     * @return array<string, array<int, mixed>> Returns an array of fields as accepted by the InputObjectType constructor.
+     *
+     * @return array<string, ParameterInterface> Returns an array of parameters.
      */
-    public function getInputFields(ReflectionMethod $refMethod): array
+    public function getParameters(ReflectionMethod $refMethod): array
     {
         $docBlockObj = $this->cachedDocBlockFactory->getDocBlock($refMethod);
         //$docBlockComment = $docBlockObj->getSummary()."\n".$docBlockObj->getDescription()->render();
 
         $parameters = $refMethod->getParameters();
 
-        $args = $this->mapParameters($parameters, $docBlockObj);
-
-        return $args;
+        return $this->mapParameters($parameters, $docBlockObj);
     }
 
     /**
-     * @param object $controller
-     * @param string $annotationName
-     * @param bool $injectSource Whether to inject the source object or not as the first argument. True for @Field (unless @Type has no class attribute), false for @Query and @Mutation
-     * @return QueryField[]
-     * @throws CannotMapTypeExceptionInterface
-     * @throws \ReflectionException
+     * @param ReflectionMethod $refMethod A method annotated with a Decorate annotation.
+     *
+     * @return array<string, ParameterInterface> Returns an array of parameters.
      */
-    private function getFieldsByAnnotations($controller, string $annotationName, bool $injectSource, ?string $sourceClassName = null): array
+    public function getParametersForDecorator(ReflectionMethod $refMethod): array
     {
-        if ($sourceClassName !== null) {
-            $refClass = new \ReflectionClass($sourceClassName);
-        } else {
-            $refClass = new \ReflectionClass($controller);
+        $docBlockObj = $this->cachedDocBlockFactory->getDocBlock($refMethod);
+        //$docBlockComment = $docBlockObj->getSummary()."\n".$docBlockObj->getDescription()->render();
+
+        $parameters = $refMethod->getParameters();
+
+        if (empty($parameters)) {
+            return [];
         }
 
+        // Let's remove the first parameter.
+        array_shift($parameters);
+
+        return $this->mapParameters($parameters, $docBlockObj);
+    }
+
+    /**
+     * @param object|class-string<object> $controller The controller instance, or the name of the source class name
+     * @param bool $injectSource Whether to inject the source object or not as the first argument. True for @Field (unless @Type has no class attribute), false for @Query and @Mutation
+     *
+     * @return array<string, FieldDefinition>
+     *
+     * @throws ReflectionException
+     */
+    private function getFieldsByAnnotations($controller, string $annotationName, bool $injectSource): array
+    {
+        $refClass = new ReflectionClass($controller);
+
         $queryList = [];
+        /** @var array<string, ReflectionMethod> $refMethodByFields */
+        $refMethodByFields = [];
 
         $oldDeclaringClass = null;
-        $context = null;
+        $context           = null;
 
         $closestMatchingTypeClass = null;
         if ($annotationName === Field::class) {
             $parent = get_parent_class($refClass->getName());
-            if ($parent !== null) {
-                $closestMatchingTypeClass = $this->typeMapper->findClosestMatchingParent($parent);
+            if ($parent !== false) {
+                $closestMatchingTypeClass = $this->recursiveTypeMapper->findClosestMatchingParent($parent);
             }
         }
 
@@ -243,110 +231,124 @@ class FieldsBuilder
             // First, let's check the "Query" or "Mutation" or "Field" annotation
             $queryAnnotation = $this->annotationReader->getRequestAnnotation($refMethod, $annotationName);
 
-            if ($queryAnnotation !== null) {
-                $unauthorized = false;
-                if (!$this->isAuthorized($refMethod)) {
-                    $failWith = $this->annotationReader->getFailWithAnnotation($refMethod);
-                    if ($failWith === null) {
-                        continue;
-                    }
-                    $unauthorized = true;
-                }
+            if ($queryAnnotation === null) {
+                continue;
+            }
 
-                $docBlockObj = $this->cachedDocBlockFactory->getDocBlock($refMethod);
-                $docBlockComment = $docBlockObj->getSummary()."\n".$docBlockObj->getDescription()->render();
+            $fieldDescriptor = new QueryFieldDescriptor();
+            $fieldDescriptor->setRefMethod($refMethod);
 
-                $methodName = $refMethod->getName();
-                $name = $queryAnnotation->getName() ?: $this->namingStrategy->getFieldNameFromMethodName($methodName);
+            $docBlockObj     = $this->cachedDocBlockFactory->getDocBlock($refMethod);
+            $docBlockComment = $docBlockObj->getSummary() . "\n" . $docBlockObj->getDescription()->render();
 
-                $parameters = $refMethod->getParameters();
-                if ($injectSource === true) {
-                    $first_parameter = array_shift($parameters);
-                    // TODO: check that $first_parameter type is correct.
-                }
+            $methodName = $refMethod->getName();
+            $name       = $queryAnnotation->getName() ?: $this->namingStrategy->getFieldNameFromMethodName($methodName);
 
-                $args = $this->mapParameters($parameters, $docBlockObj);
+            $fieldDescriptor->setName($name);
+            $fieldDescriptor->setComment($docBlockComment);
 
-                if ($queryAnnotation->getOutputType()) {
+            // Get parameters from the prefetchMethod method if any.
+            $prefetchMethodName = null;
+            $prefetchArgs = [];
+            if ($queryAnnotation instanceof Field) {
+                $prefetchMethodName = $queryAnnotation->getPrefetchMethod();
+                if ($prefetchMethodName !== null) {
+                    $fieldDescriptor->setPrefetchMethodName($prefetchMethodName);
                     try {
-                        $type = $this->typeResolver->mapNameToOutputType($queryAnnotation->getOutputType());
-                    } catch (CannotMapTypeExceptionInterface $e) {
-                        throw CannotMapTypeException::wrapWithReturnInfo($e, $refMethod);
+                        $prefetchRefMethod = $refClass->getMethod($prefetchMethodName);
+                    } catch (ReflectionException $e) {
+                        throw InvalidPrefetchMethodRuntimeException::methodNotFound($refMethod, $refClass, $prefetchMethodName, $e);
                     }
-                } else {
-                    $type = $this->mapReturnType($refMethod, $docBlockObj);
-                }
 
-                if ($unauthorized) {
-                    $failWithValue = $failWith->getValue();
-                    $callable = function() use ($failWithValue) {
-                        return $failWithValue;
-                    };
-                    if ($failWithValue === null && $type instanceof NonNull) {
-                        $type = $type->getWrappedType();
-                    }
-                    $queryList[] = new QueryField($name, $type, $args, $callable, null, $this->argumentResolver, $docBlockComment, $injectSource);
-                } else {
-                    $callable = [$controller, $methodName];
-                    if ($sourceClassName !== null) {
-                        $queryList[] = new QueryField($name, $type, $args, null, $callable[1], $this->argumentResolver, $docBlockComment, $injectSource);
-                    } else {
-                        $queryList[] = new QueryField($name, $type, $args, $callable, null, $this->argumentResolver, $docBlockComment, $injectSource);
-                    }
+                    $prefetchParameters = $prefetchRefMethod->getParameters();
+                    $firstPrefetchParameter = array_shift($prefetchParameters);
+
+                    $prefetchDocBlockObj = $this->cachedDocBlockFactory->getDocBlock($prefetchRefMethod);
+
+                    $prefetchArgs = $this->mapParameters($prefetchParameters, $prefetchDocBlockObj);
+                    $fieldDescriptor->setPrefetchParameters($prefetchArgs);
                 }
             }
+
+            $parameters = $refMethod->getParameters();
+            if ($injectSource === true) {
+                $firstParameter = array_shift($parameters);
+                // TODO: check that $first_parameter type is correct.
+            }
+            if ($prefetchMethodName !== null) {
+                $secondParameter = array_shift($parameters);
+                if ($secondParameter === null) {
+                    throw InvalidPrefetchMethodRuntimeException::prefetchDataIgnored($prefetchRefMethod, $injectSource);
+                }
+            }
+
+            $args = $this->mapParameters($parameters, $docBlockObj);
+
+            $fieldDescriptor->setParameters($args);
+
+            $outputType = $queryAnnotation->getOutputType();
+            if ($outputType) {
+                try {
+                    $type = $this->typeResolver->mapNameToOutputType($outputType);
+                } catch (CannotMapTypeExceptionInterface $e) {
+                    $e->addReturnInfo($refMethod);
+                    throw $e;
+                }
+            } else {
+                $type = $this->typeMapper->mapReturnType($refMethod, $docBlockObj);
+            }
+            if (is_string($controller)) {
+                $fieldDescriptor->setTargetMethodOnSource($methodName);
+            } else {
+                $callable = [$controller, $methodName];
+                Assert::isCallable($callable);
+                $fieldDescriptor->setCallable($callable);
+            }
+
+            $fieldDescriptor->setType($type);
+            $fieldDescriptor->setInjectSource($injectSource);
+
+            $fieldDescriptor->setMiddlewareAnnotations($this->annotationReader->getMiddlewareAnnotations($refMethod));
+
+            $field = $this->fieldMiddleware->process($fieldDescriptor, new class implements FieldHandlerInterface {
+                public function handle(QueryFieldDescriptor $fieldDescriptor): ?FieldDefinition
+                {
+                    return QueryField::fromFieldDescriptor($fieldDescriptor);
+                }
+            });
+
+            if ($field !== null) {
+                if (isset($refMethodByFields[$name])) {
+                    throw DuplicateMappingException::createForQuery($refClass->getName(), $name, $refMethodByFields[$name], $refMethod);
+                }
+                $queryList[$name] = $field;
+                $refMethodByFields[$name] = $refMethod;
+            }
+
+            /*if ($unauthorized) {
+                $failWithValue = $failWith->getValue();
+                $queryList[]   = QueryField::alwaysReturn($fieldDescriptor, $failWithValue);
+            } elseif ($sourceClassName !== null) {
+                $fieldDescriptor->setTargetMethodOnSource($methodName);
+                $queryList[] = QueryField::selfField($fieldDescriptor);
+            } else {
+                $fieldDescriptor->setCallable([$controller, $methodName]);
+                $queryList[] = QueryField::externalField($fieldDescriptor);
+            }*/
         }
 
         return $queryList;
     }
 
     /**
-     * @return GraphQLType&OutputType
-     */
-    private function mapReturnType(ReflectionMethod $refMethod, DocBlock $docBlockObj): GraphQLType
-    {
-        $returnType = $refMethod->getReturnType();
-        if ($returnType !== null) {
-            $typeResolver = new \phpDocumentor\Reflection\TypeResolver();
-            $phpdocType = $typeResolver->resolve((string) $returnType);
-            $phpdocType = $this->resolveSelf($phpdocType, $refMethod->getDeclaringClass());
-        } else {
-            $phpdocType = new Mixed_();
-        }
-
-        $docBlockReturnType = $this->getDocBlocReturnType($docBlockObj, $refMethod);
-
-        try {
-            /** @var GraphQLType&OutputType $type */
-            $type = $this->mapType($phpdocType, $docBlockReturnType, $returnType ? $returnType->allowsNull() : false, false);
-        } catch (TypeMappingException $e) {
-            throw TypeMappingException::wrapWithReturnInfo($e, $refMethod);
-        } catch (CannotMapTypeExceptionInterface $e) {
-            throw CannotMapTypeException::wrapWithReturnInfo($e, $refMethod);
-        }
-        return $type;
-    }
-
-    private function getDocBlocReturnType(DocBlock $docBlock, \ReflectionMethod $refMethod): ?Type
-    {
-        /** @var Return_[] $returnTypeTags */
-        $returnTypeTags = $docBlock->getTagsByName('return');
-        if (count($returnTypeTags) > 1) {
-            throw InvalidDocBlockException::tooManyReturnTags($refMethod);
-        }
-        $docBlockReturnType = null;
-        if (isset($returnTypeTags[0])) {
-            $docBlockReturnType = $returnTypeTags[0]->getType();
-        }
-        return $docBlockReturnType;
-    }
-
-    /**
-     * @param array<int, SourceFieldInterface> $sourceFields
-     * @return QueryField[]
+     * @param SourceFieldInterface[] $sourceFields
+     * @param ReflectionClass<object> $refClass
+     *
+     * @return FieldDefinition[]
+     *
      * @throws CannotMapTypeException
      * @throws CannotMapTypeExceptionInterface
-     * @throws \ReflectionException
+     * @throws ReflectionException
      */
     private function getQueryFieldsFromSourceFields(array $sourceFields, ReflectionClass $refClass): array
     {
@@ -354,93 +356,150 @@ class FieldsBuilder
             return [];
         }
 
-        $typeField = $this->annotationReader->getTypeAnnotation($refClass);
+        $typeField       = $this->annotationReader->getTypeAnnotation($refClass);
         $extendTypeField = $this->annotationReader->getExtendTypeAnnotation($refClass);
 
         if ($typeField !== null) {
             $objectClass = $typeField->getClass();
         } elseif ($extendTypeField !== null) {
             $objectClass = $extendTypeField->getClass();
+            if ($objectClass === null) {
+                // We need to be able to fetch the mapped PHP class from the object type!
+                $typeName = $extendTypeField->getName();
+                Assert::notNull($typeName);
+                $targetedType = $this->recursiveTypeMapper->mapNameToType($typeName);
+                if (! $targetedType instanceof MutableObjectType) {
+                    throw CannotMapTypeException::extendTypeWithBadTargetedClass($refClass->getName(), $extendTypeField);
+                }
+                $objectClass = $targetedType->getMappedClassName();
+                if ($objectClass === null) {
+                    throw new CannotMapTypeException('@ExtendType(name="' . $extendTypeField->getName() . '") points to a GraphQL type that does not map a PHP class. Therefore, you cannot use the @SourceField annotation in conjunction with this @ExtendType.');
+                }
+            }
         } else {
             throw MissingAnnotationException::missingTypeExceptionToUseSourceField();
         }
 
-        $objectRefClass = new \ReflectionClass($objectClass);
+        $objectRefClass = new ReflectionClass($objectClass);
 
         $oldDeclaringClass = null;
-        $context = null;
-        $queryList = [];
+        $context           = null;
+        $queryList         = [];
 
         foreach ($sourceFields as $sourceField) {
-            // Ignore the field if we must be logged.
-            $right = $sourceField->getRight();
-            $unauthorized = false;
-            if (($sourceField->isLogged() && !$this->authenticationService->isLogged())
-                || ($right !== null && !$this->authorizationService->isAllowed($right->getName()))) {
-                if (!$sourceField->canFailWith()) {
-                    continue;
-                } else {
-                    $unauthorized = true;
-                }
-            }
+            $fieldDescriptor = new QueryFieldDescriptor();
+            $fieldDescriptor->setName($sourceField->getName());
 
-            try {
-                $refMethod = $this->getMethodFromPropertyName($objectRefClass, $sourceField->getName());
-            } catch (FieldNotFoundException $e) {
-                throw FieldNotFoundException::wrapWithCallerInfo($e, $refClass->getName());
-            }
-
-            $methodName = $refMethod->getName();
-
-
-            $docBlockObj = $this->cachedDocBlockFactory->getDocBlock($refMethod);
-            $docBlockComment = $docBlockObj->getSummary()."\n".$docBlockObj->getDescription()->render();
-
-
-            $args = $this->mapParameters($refMethod->getParameters(), $docBlockObj);
-
-            if ($sourceField->isId()) {
-                $type = GraphQLType::id();
-                if (!$refMethod->getReturnType()->allowsNull()) {
-                    $type = GraphQLType::nonNull($type);
-                }
-            } elseif ($sourceField->getOutputType()) {
+            if (! $sourceField->shouldFetchFromMagicProperty()) {
                 try {
-                    $type = $this->typeResolver->mapNameToOutputType($sourceField->getOutputType());
-                } catch (CannotMapTypeExceptionInterface $e) {
-                    throw CannotMapTypeException::wrapWithSourceField($e, $refClass, $sourceField);
+                    $refMethod = $this->getMethodFromPropertyName($objectRefClass, $sourceField->getName());
+                } catch (FieldNotFoundException $e) {
+                    throw FieldNotFoundException::wrapWithCallerInfo($e, $refClass->getName());
+                }
+                $fieldDescriptor->setRefMethod($refMethod);
+                $methodName = $refMethod->getName();
+                $fieldDescriptor->setTargetMethodOnSource($methodName);
+
+                $docBlockObj     = $this->cachedDocBlockFactory->getDocBlock($refMethod);
+                $docBlockComment = $docBlockObj->getSummary() . "\n" . $docBlockObj->getDescription()->render();
+
+                $fieldDescriptor->setComment($docBlockComment);
+                $args = $this->mapParameters($refMethod->getParameters(), $docBlockObj, $sourceField);
+
+                $fieldDescriptor->setParameters($args);
+
+                $outputType = $sourceField->getOutputType();
+                $phpTypeStr = $sourceField->getPhpType();
+                if ($outputType !== null) {
+                    $type = $this->resolveOutputType($outputType, $refClass, $sourceField);
+                } elseif ($phpTypeStr !== null) {
+                    $type = $this->resolvePhpType($phpTypeStr, $refClass, $refMethod);
+                } else {
+                    $type = $this->typeMapper->mapReturnType($refMethod, $docBlockObj);
                 }
             } else {
-                $type = $this->mapReturnType($refMethod, $docBlockObj);
-            }
-
-            if (!$unauthorized) {
-                $queryList[] = new QueryField($sourceField->getName(), $type, $args, null, $methodName, $this->argumentResolver, $docBlockComment, false);
-            } else {
-                $failWithValue = $sourceField->getFailWith();
-                $callable = function() use ($failWithValue) {
-                    return $failWithValue;
-                };
-                if ($failWithValue === null && $type instanceof NonNull) {
-                    $type = $type->getWrappedType();
+                $fieldDescriptor->setMagicProperty($sourceField->getName());
+                $outputType = $sourceField->getOutputType();
+                if ($outputType !== null) {
+                    $type = $this->resolveOutputType($outputType, $refClass, $sourceField);
+                } else {
+                    $phpTypeStr = $sourceField->getPhpType();
+                    Assert::notNull($phpTypeStr);
+                    $refMethod = $refClass->getMethod('__get');
+                    $type = $this->resolvePhpType($phpTypeStr, $refClass, $refMethod);
                 }
-                $queryList[] = new QueryField($sourceField->getName(), $type, $args, $callable, null, $this->argumentResolver, $docBlockComment, false);
             }
 
+            $fieldDescriptor->setType($type);
+            $fieldDescriptor->setInjectSource(false);
+            $fieldDescriptor->setMiddlewareAnnotations($sourceField->getMiddlewareAnnotations());
+
+            $field = $this->fieldMiddleware->process($fieldDescriptor, new class implements FieldHandlerInterface {
+                public function handle(QueryFieldDescriptor $fieldDescriptor): ?FieldDefinition
+                {
+                    return QueryField::fromFieldDescriptor($fieldDescriptor);
+                }
+            });
+
+            if ($field === null) {
+                continue;
+            }
+
+            $queryList[] = $field;
         }
+
         return $queryList;
     }
 
-    private function getMethodFromPropertyName(\ReflectionClass $reflectionClass, string $propertyName): \ReflectionMethod
+    /**
+     * @param ReflectionClass<object> $refClass
+     *
+     * @return OutputType&Type
+     */
+    private function resolveOutputType(string $outputType, ReflectionClass $refClass, SourceFieldInterface $sourceField): OutputType
+    {
+        try {
+            return $this->typeResolver->mapNameToOutputType($outputType);
+        } catch (CannotMapTypeExceptionInterface $e) {
+            $e->addSourceFieldInfo($refClass, $sourceField);
+            throw $e;
+        }
+    }
+
+    /**
+     * @param ReflectionClass<object> $refClass
+     *
+     * @return OutputType&Type
+     */
+    private function resolvePhpType(string $phpTypeStr, ReflectionClass $refClass, ReflectionMethod $refMethod): OutputType
+    {
+        $typeResolver = new \phpDocumentor\Reflection\TypeResolver();
+
+        $context = $this->cachedDocBlockFactory->getContextFromClass($refClass);
+        $phpdocType = $typeResolver->resolve($phpTypeStr, $context);
+        Assert::notNull($phpdocType);
+
+        $fakeDocBlock = new DocBlock('', null, [new DocBlock\Tags\Return_($phpdocType)], $context);
+        return $this->typeMapper->mapReturnType($refMethod, $fakeDocBlock);
+
+        // TODO: add a catch to CannotMapTypeExceptionInterface and a "addMagicFieldInfo" method to know where the issues are coming from.
+    }
+
+    /**
+     * @param ReflectionClass<T> $reflectionClass
+     *
+     * @template T of object
+     */
+    private function getMethodFromPropertyName(ReflectionClass $reflectionClass, string $propertyName): ReflectionMethod
     {
         if ($reflectionClass->hasMethod($propertyName)) {
             $methodName = $propertyName;
         } else {
-            $upperCasePropertyName = \ucfirst($propertyName);
-            if ($reflectionClass->hasMethod('get'.$upperCasePropertyName)) {
-                $methodName = 'get'.$upperCasePropertyName;
-            } elseif ($reflectionClass->hasMethod('is'.$upperCasePropertyName)) {
-                $methodName = 'is'.$upperCasePropertyName;
+            $upperCasePropertyName = ucfirst($propertyName);
+            if ($reflectionClass->hasMethod('get' . $upperCasePropertyName)) {
+                $methodName = 'get' . $upperCasePropertyName;
+            } elseif ($reflectionClass->hasMethod('is' . $upperCasePropertyName)) {
+                $methodName = 'is' . $upperCasePropertyName;
             } else {
                 throw FieldNotFoundException::missingField($reflectionClass->getName(), $propertyName);
             }
@@ -450,353 +509,53 @@ class FieldsBuilder
     }
 
     /**
-     * Checks the @Logged and @Right annotations.
+     * @param ReflectionParameter[] $refParameters
      *
-     * @param \ReflectionMethod $reflectionMethod
-     * @return bool
+     * @return array<string, ParameterInterface>
      */
-    private function isAuthorized(\ReflectionMethod $reflectionMethod) : bool
+    private function mapParameters(array $refParameters, DocBlock $docBlock, ?SourceFieldInterface $sourceField = null): array
     {
-        $loggedAnnotation = $this->annotationReader->getLoggedAnnotation($reflectionMethod);
-
-        if ($loggedAnnotation !== null && !$this->authenticationService->isLogged()) {
-            return false;
+        if (empty($refParameters)) {
+            return [];
         }
+        $additionalParameterAnnotations = $sourceField !== null ? $sourceField->getParameterAnnotations() : [];
 
-
-        $rightAnnotation = $this->annotationReader->getRightAnnotation($reflectionMethod);
-
-        if ($rightAnnotation !== null && !$this->authorizationService->isAllowed($rightAnnotation->getName())) {
-            return false;
-        }
-
-        return true;
-    }
-
-    /**
-     * Note: there is a bug in $refMethod->allowsNull that forces us to use $standardRefMethod->allowsNull instead.
-     *
-     * @param \ReflectionParameter[] $refParameters
-     * @return array[] An array of ['type'=>Type, 'defaultValue'=>val]
-     * @throws MissingTypeHintException
-     */
-    private function mapParameters(array $refParameters, DocBlock $docBlock): array
-    {
-        $args = [];
-
-        $typeResolver = new \phpDocumentor\Reflection\TypeResolver();
-
-        foreach ($refParameters as $parameter) {
-            $parameterType = $parameter->getType();
-            $allowsNull = $parameterType === null ? true : $parameterType->allowsNull();
-
-            $type = (string) $parameterType;
-            if ($type === '') {
-                throw MissingTypeHintException::missingTypeHint($parameter);
-            }
-            $phpdocType = $typeResolver->resolve($type);
-            $phpdocType = $this->resolveSelf($phpdocType, $parameter->getDeclaringClass());
-
+        $docBlockTypes = [];
+        if (! empty($refParameters)) {
             /** @var DocBlock\Tags\Param[] $paramTags */
             $paramTags = $docBlock->getTagsByName('param');
-            $docBlockType = null;
             foreach ($paramTags as $paramTag) {
-                if ($paramTag->getVariableName() === $parameter->getName()) {
-                    $docBlockType = $paramTag->getType();
-                    break;
+                $docBlockTypes[$paramTag->getVariableName()] = $paramTag->getType();
+            }
+        }
+
+        $parameterAnnotationsPerParameter = $this->annotationReader->getParameterAnnotationsPerParameter($refParameters);
+
+        foreach ($refParameters as $parameter) {
+            $parameterAnnotations = $parameterAnnotationsPerParameter[$parameter->getName()] ?? new ParameterAnnotations([]);
+            //$parameterAnnotations = $this->annotationReader->getParameterAnnotations($parameter);
+            if (! empty($additionalParameterAnnotations[$parameter->getName()])) {
+                $parameterAnnotations->merge($additionalParameterAnnotations[$parameter->getName()]);
+                unset($additionalParameterAnnotations[$parameter->getName()]);
+            }
+
+            $parameterObj = $this->parameterMapper->mapParameter($parameter, $docBlock, $docBlockTypes[$parameter->getName()] ?? null, $parameterAnnotations, $this->typeMapper);
+
+            $args[$parameter->getName()] = $parameterObj;
+        }
+
+        // Sanity check, are the parameters declared in $additionalParameterAnnotations available in $refParameters?
+        if (! empty($additionalParameterAnnotations)) {
+            $refParameter = reset($refParameters);
+            foreach ($additionalParameterAnnotations as $parameterName => $parameterAnnotations) {
+                foreach ($parameterAnnotations->getAllAnnotations() as $annotation) {
+                    $refMethod = $refParameter->getDeclaringFunction();
+                    assert($refMethod instanceof ReflectionMethod);
+                    throw InvalidParameterException::parameterNotFoundFromSourceField($refParameter->getName(), get_class($annotation), $refMethod);
                 }
             }
-
-            try {
-                $arr = [
-                    'type' => $this->mapType($phpdocType, $docBlockType, $allowsNull || $parameter->isDefaultValueAvailable(), true),
-                ];
-            } catch (TypeMappingException $e) {
-                throw TypeMappingException::wrapWithParamInfo($e, $parameter);
-            } catch (CannotMapTypeExceptionInterface $e) {
-                throw CannotMapTypeException::wrapWithParamInfo($e, $parameter);
-            }
-
-            if ($parameter->allowsNull()) {
-                $arr['defaultValue'] = null;
-            }
-            if ($parameter->isDefaultValueAvailable()) {
-                $arr['defaultValue'] = $parameter->getDefaultValue();
-            }
-
-            $args[$parameter->getName()] = $arr;
         }
 
         return $args;
-    }
-
-    private function mapType(Type $type, ?Type $docBlockType, bool $isNullable, bool $mapToInputType): GraphQLType
-    {
-        $graphQlType = null;
-
-        if ($type instanceof Array_ || $type instanceof Iterable_ || $type instanceof Mixed_) {
-            $graphQlType = $this->mapDocBlockType($type, $docBlockType, $isNullable, $mapToInputType);
-        } else {
-            try {
-                $graphQlType = $this->toGraphQlType($type, null, $mapToInputType);
-                if (!$isNullable) {
-                    $graphQlType = GraphQLType::nonNull($graphQlType);
-                }
-            } catch (TypeMappingException | CannotMapTypeExceptionInterface $e) {
-                // Is the type iterable? If yes, let's analyze the docblock
-                // TODO: it would be better not to go through an exception for this.
-                if ($type instanceof Object_) {
-                    $fqcn = (string) $type->getFqsen();
-                    $refClass = new ReflectionClass($fqcn);
-                    // Note : $refClass->isIterable() is only accessible in PHP 7.2
-                    if ($refClass->implementsInterface(Iterator::class) || $refClass->implementsInterface(IteratorAggregate::class)) {
-                        $graphQlType = $this->mapIteratorDocBlockType($type, $docBlockType, $isNullable);
-                    } else {
-                        throw $e;
-                    }
-                } else {
-                    throw $e;
-                }
-            }
-        }
-
-        return $graphQlType;
-    }
-
-    private function mapDocBlockType(Type $type, ?Type $docBlockType, bool $isNullable, bool $mapToInputType): GraphQLType
-    {
-        if ($docBlockType === null) {
-            throw TypeMappingException::createFromType($type);
-        }
-        if (!$isNullable) {
-            // Let's check a "null" value in the docblock
-            $isNullable = $this->isNullable($docBlockType);
-        }
-
-        $filteredDocBlockTypes = $this->typesWithoutNullable($docBlockType);
-        if (empty($filteredDocBlockTypes)) {
-            throw TypeMappingException::createFromType($type);
-        }
-
-        $unionTypes = [];
-        $lastException = null;
-        foreach ($filteredDocBlockTypes as $singleDocBlockType) {
-            try {
-                $unionTypes[] = $this->toGraphQlType($this->dropNullableType($singleDocBlockType), null, $mapToInputType);
-            } catch (TypeMappingException | CannotMapTypeExceptionInterface $e) {
-                // We have several types. It is ok not to be able to match one.
-                $lastException = $e;
-            }
-        }
-
-        if (empty($unionTypes) && $lastException !== null) {
-            throw $lastException;
-        }
-
-        if (count($unionTypes) === 1) {
-            $graphQlType = $unionTypes[0];
-        } else {
-            $graphQlType = new UnionType($unionTypes, $this->typeMapper);
-        }
-
-        /* elseif (count($filteredDocBlockTypes) === 1) {
-            $graphQlType = $this->toGraphQlType($filteredDocBlockTypes[0], $mapToInputType);
-        } else {
-            throw new GraphQLException('Union types are not supported (yet)');
-            //$graphQlTypes = array_map([$this, 'toGraphQlType'], $filteredDocBlockTypes);
-            //$$graphQlType = new UnionType($graphQlTypes);
-        }*/
-
-        if (!$isNullable) {
-            $graphQlType = GraphQLType::nonNull($graphQlType);
-        }
-        return $graphQlType;
-    }
-
-    /**
-     * Maps a type where the main PHP type is an iterator
-     */
-    private function mapIteratorDocBlockType(Type $type, ?Type $docBlockType, bool $isNullable): GraphQLType
-    {
-        if ($docBlockType === null) {
-            throw TypeMappingException::createFromType($type);
-        }
-        if (!$isNullable) {
-            // Let's check a "null" value in the docblock
-            $isNullable = $this->isNullable($docBlockType);
-        }
-
-        $filteredDocBlockTypes = $this->typesWithoutNullable($docBlockType);
-        if (empty($filteredDocBlockTypes)) {
-            throw TypeMappingException::createFromType($type);
-        }
-
-        $unionTypes = [];
-        $lastException = null;
-        foreach ($filteredDocBlockTypes as $singleDocBlockType) {
-            try {
-                $singleDocBlockType = $this->getTypeInArray($singleDocBlockType);
-                if ($singleDocBlockType !== null) {
-                    $subGraphQlType = $this->toGraphQlType($singleDocBlockType, null, false);
-                } else {
-                    $subGraphQlType = null;
-                }
-
-                $unionTypes[] = $this->toGraphQlType($type, $subGraphQlType, false);
-
-                // TODO: add here a scan of the $type variable and do stuff if it is iterable.
-                // TODO: remove the iterator type if specified in the docblock (@return Iterator|User[])
-                // TODO: check there is at least one array (User[])
-            } catch (TypeMappingException | CannotMapTypeExceptionInterface $e) {
-                // We have several types. It is ok not to be able to match one.
-                $lastException = $e;
-            }
-        }
-
-        if (empty($unionTypes) && $lastException !== null) {
-            // We have an issue, let's try without the subType
-            return $this->mapDocBlockType($type, $docBlockType, $isNullable, false);
-        }
-
-        if (count($unionTypes) === 1) {
-            $graphQlType = $unionTypes[0];
-        } else {
-            $graphQlType = new UnionType($unionTypes, $this->typeMapper);
-        }
-
-        if (!$isNullable) {
-            $graphQlType = GraphQLType::nonNull($graphQlType);
-        }
-        return $graphQlType;
-    }
-
-    /**
-     * Casts a Type to a GraphQL type.
-     * Does not deal with nullable.
-     *
-     * @param Type $type
-     * @param GraphQLType|null $subType
-     * @param bool $mapToInputType
-     * @return GraphQLType (InputType&GraphQLType)|(OutputType&GraphQLType)
-     * @throws CannotMapTypeExceptionInterface
-     */
-    private function toGraphQlType(Type $type, ?GraphQLType $subType, bool $mapToInputType): GraphQLType
-    {
-        if ($type instanceof Integer) {
-            return GraphQLType::int();
-        } elseif ($type instanceof String_) {
-            return GraphQLType::string();
-        } elseif ($type instanceof Boolean) {
-            return GraphQLType::boolean();
-        } elseif ($type instanceof Float_) {
-            return GraphQLType::float();
-        } elseif ($type instanceof Object_) {
-            $fqcn = (string) $type->getFqsen();
-            switch ($fqcn) {
-                case '\\DateTimeImmutable':
-                case '\\DateTimeInterface':
-                    return DateTimeType::getInstance();
-                case '\\'.UploadedFileInterface::class:
-                    return CustomTypesRegistry::getUploadType();
-                case '\\DateTime':
-                    throw new GraphQLException('Type-hinting a parameter against DateTime is not allowed. Please use the DateTimeImmutable type instead.');
-                case '\\'.ID::class:
-                    return GraphQLType::id();
-                default:
-                    $className = ltrim($type->getFqsen(), '\\');
-                    if ($mapToInputType) {
-                        return $this->typeMapper->mapClassToInputType($className);
-                    } else {
-                        return $this->typeMapper->mapClassToInterfaceOrType($className, $subType);
-                    }
-            }
-        } elseif ($type instanceof Array_) {
-            return GraphQLType::listOf(GraphQLType::nonNull($this->toGraphQlType($type->getValueType(), $subType, $mapToInputType)));
-        } else {
-            throw TypeMappingException::createFromType($type);
-        }
-    }
-
-    /**
-     * Removes "null" from the type (if it is compound). Return an array of types (not a Compound type).
-     *
-     * @param Type $docBlockTypeHint
-     * @return array
-     */
-    private function typesWithoutNullable(Type $docBlockTypeHint): array
-    {
-        if ($docBlockTypeHint instanceof Compound) {
-            $docBlockTypeHints = \iterator_to_array($docBlockTypeHint);
-        } else {
-            $docBlockTypeHints = [$docBlockTypeHint];
-        }
-        return array_filter($docBlockTypeHints, function ($item) {
-            return !$item instanceof Null_;
-        });
-    }
-
-    /**
-     * Drops "Nullable" types and return the core type.
-     *
-     * @param Type $typeHint
-     * @return Type
-     */
-    private function dropNullableType(Type $typeHint): Type
-    {
-        if ($typeHint instanceof Nullable) {
-            return $typeHint->getActualType();
-        }
-        return $typeHint;
-    }
-
-    /**
-     * Resolves a list type.
-     *
-     * @param Type $typeHint
-     * @return Type|null
-     */
-    private function getTypeInArray(Type $typeHint): ?Type
-    {
-        $typeHint = $this->dropNullableType($typeHint);
-
-        if (!$typeHint instanceof Array_) {
-            return null;
-        }
-
-        return $this->dropNullableType($typeHint->getValueType());
-    }
-
-    /**
-     * @param Type $docBlockTypeHint
-     * @return bool
-     */
-    private function isNullable(Type $docBlockTypeHint): bool
-    {
-        if ($docBlockTypeHint instanceof Null_) {
-            return true;
-        }
-        if ($docBlockTypeHint instanceof Compound) {
-            foreach ($docBlockTypeHint as $type) {
-                if ($type instanceof Null_) {
-                    return true;
-                }
-            }
-        }
-
-        return false;
-    }
-
-    /**
-     * Resolves "self" types into the class type.
-     *
-     * @param Type $type
-     * @return Type
-     */
-    private function resolveSelf(Type $type, ReflectionClass $reflectionClass): Type
-    {
-        if ($type instanceof Self_) {
-            return new Object_(new Fqsen('\\'.$reflectionClass->getName()));
-        }
-        return $type;
     }
 }

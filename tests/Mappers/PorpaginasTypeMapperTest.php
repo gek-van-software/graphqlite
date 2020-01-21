@@ -5,80 +5,106 @@ namespace TheCodingMachine\GraphQLite\Mappers;
 use GraphQL\Type\Definition\ListOfType;
 use GraphQL\Type\Definition\StringType;
 use Porpaginas\Arrays\ArrayResult;
+use Porpaginas\Result;
 use RuntimeException;
 use TheCodingMachine\GraphQLite\AbstractQueryProviderTest;
+use TheCodingMachine\GraphQLite\Fixtures\Mocks\MockResolvableInputObjectType;
 use TheCodingMachine\GraphQLite\Types\MutableObjectType;
 
 class PorpaginasTypeMapperTest extends AbstractQueryProviderTest
 {
-    public function testException()
+    private function getPorpaginasTypeMapper(): PorpaginasTypeMapper
     {
-        $mapper = new PorpaginasTypeMapper();
+        return new PorpaginasTypeMapper($this->getTypeMapper());
+    }
+    
+    public function testException(): void
+    {
+        $mapper = $this->getPorpaginasTypeMapper();
 
         $this->expectException(CannotMapTypeExceptionInterface::class);
         $mapper->mapClassToType("\stdClass", null, $this->getTypeMapper());
     }
 
-    public function testException2()
+    public function testException2(): void
     {
-        $mapper = new PorpaginasTypeMapper();
+        $mapper = $this->getPorpaginasTypeMapper();
 
         $this->expectException(RuntimeException::class);
         $mapper->mapClassToType(ArrayResult::class, new ListOfType(new StringType()), $this->getTypeMapper());
     }
 
-    public function testException3()
+    public function testException3(): void
     {
-        $mapper = new PorpaginasTypeMapper();
+        $mapper = $this->getPorpaginasTypeMapper();
 
         $this->expectException(CannotMapTypeExceptionInterface::class);
         $mapper->mapNameToType('foo', $this->getTypeMapper());
     }
 
-    public function testException4()
+    public function testException4(): void
     {
-        $mapper = new PorpaginasTypeMapper();
+        $mapper = $this->getPorpaginasTypeMapper();
 
         $this->expectException(CannotMapTypeExceptionInterface::class);
         $mapper->mapNameToType('PorpaginasResult_TestObjectInput', $this->getTypeMapper());
     }
 
-    public function testException5()
+    public function testException5(): void
     {
-        $mapper = new PorpaginasTypeMapper();
+        $mapper = $this->getPorpaginasTypeMapper();
 
         $this->expectException(CannotMapTypeExceptionInterface::class);
         $mapper->mapClassToInputType('foo', $this->getTypeMapper());
     }
 
-    public function testException6()
+    public function testException6(): void
     {
-        $mapper = new PorpaginasTypeMapper();
+        $mapper = $this->getPorpaginasTypeMapper();
         $type = new MutableObjectType(['name'=>'foo']);
 
         $this->expectException(CannotMapTypeExceptionInterface::class);
         $mapper->extendTypeForClass('foo', $type, $this->getTypeMapper());
     }
 
-    public function testException7()
+    public function testException7(): void
     {
-        $mapper = new PorpaginasTypeMapper();
+        $mapper = $this->getPorpaginasTypeMapper();
         $type = new MutableObjectType(['name'=>'foo']);
 
         $this->expectException(CannotMapTypeExceptionInterface::class);
         $mapper->extendTypeForName('foo', $type, $this->getTypeMapper());
     }
 
-    public function testCanMapClassToInputType()
+    public function testException8(): void
     {
-        $mapper = new PorpaginasTypeMapper();
+        $mapper = $this->getPorpaginasTypeMapper();
+        $type = new MockResolvableInputObjectType(['name'=>'foo']);
+
+        $this->expectException(CannotMapTypeExceptionInterface::class);
+        $mapper->decorateInputTypeForName('foo', $type);
+    }
+
+    public function testException9(): void
+    {
+        $mapper = $this->getPorpaginasTypeMapper();
+        $type = new MockResolvableInputObjectType(['name'=>'foo']);
+
+        $this->expectException(PorpaginasMissingParameterException::class);
+        $mapper->mapClassToType(Result::class, null);
+    }
+
+
+    public function testCanMapClassToInputType(): void
+    {
+        $mapper = $this->getPorpaginasTypeMapper();
 
         $this->assertFalse($mapper->canMapClassToInputType('foo'));
     }
 
-    public function testMapNameToType()
+    public function testMapNameToType(): void
     {
-        $mapper = new PorpaginasTypeMapper();
+        $mapper = $this->getPorpaginasTypeMapper();
 
         $type = $mapper->mapNameToType('PorpaginasResult_TestObject', $this->getTypeMapper());
 

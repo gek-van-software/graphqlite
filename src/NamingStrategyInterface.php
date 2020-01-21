@@ -1,10 +1,15 @@
 <?php
 
+declare(strict_types=1);
+
 namespace TheCodingMachine\GraphQLite;
 
 use TheCodingMachine\GraphQLite\Annotations\Factory;
 use TheCodingMachine\GraphQLite\Annotations\Type;
 
+/**
+ * @unstable See https://graphqlite.thecodingmachine.io/docs/semver.html
+ */
 interface NamingStrategyInterface
 {
     /**
@@ -12,6 +17,12 @@ interface NamingStrategyInterface
      * automatically to manage inheritance)
      */
     public function getInterfaceNameFromConcreteName(string $concreteType): string;
+
+    /**
+     * Returns the name of the GraphQL object from a name of GraphQL interface type (when the object is created
+     * automatically from a "Type" annotated interface)
+     */
+    public function getConcreteNameFromInterfaceName(string $name): string;
 
     /**
      * Returns the GraphQL output object type name based on the type className and the Type annotation.

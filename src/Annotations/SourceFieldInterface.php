@@ -1,7 +1,8 @@
 <?php
 
-namespace TheCodingMachine\GraphQLite\Annotations;
+declare(strict_types=1);
 
+namespace TheCodingMachine\GraphQLite\Annotations;
 
 /**
  * SourceFields are fields that are directly source from the base object into GraphQL.
@@ -9,51 +10,32 @@ namespace TheCodingMachine\GraphQLite\Annotations;
 interface SourceFieldInterface
 {
     /**
-     * Returns the GraphQL right to be applied to this source field.
-     *
-     * @return Right|null
-     */
-    public function getRight(): ?Right;
-
-    /**
      * Returns the name of the GraphQL query/mutation/field.
-     * If not specified, the name of the method should be used instead.
-     *
-     * @return null|string
      */
-    public function getName(): ?string;
+    public function getName(): string;
 
     /**
-     * @return bool
-     */
-    public function isLogged(): bool;
-
-    /**
-     * Returns the GraphQL return type of the request (as a string).
+     * Returns the GraphQL return type of the field (as a string).
      * The string is the GraphQL output type name.
-     *
-     * @return string|null
      */
     public function getOutputType(): ?string;
 
     /**
-     * If the GraphQL type is "ID", isID will return true.
-     *
-     * @return bool
+     * Returns the PHP return type of the field (as a string).
+     * The string is the PHPDoc for the PHP type.
      */
-    public function isId(): bool;
+    public function getPhpType(): ?string;
+
+    public function getMiddlewareAnnotations(): MiddlewareAnnotations;
 
     /**
-     * Returns the default value to use if the right is not enforced.
-     *
-     * @return mixed
+     * @return array<string, ParameterAnnotations> Key: the name of the attribute
      */
-    public function getFailWith();
+    public function getParameterAnnotations(): array;
 
     /**
-     * True if a default value is available if a right is not enforced.
-     *
-     * @return bool
+     * If true, this source field should be fetched from a magic property (rather than from a getter)
+     * In this case, getOutputType MUST NOT return null.
      */
-    public function canFailWith();
+    public function shouldFetchFromMagicProperty(): bool;
 }

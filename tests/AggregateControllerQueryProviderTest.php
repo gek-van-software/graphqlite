@@ -13,7 +13,7 @@ use TheCodingMachine\GraphQLite\Security\VoidAuthorizationService;
 
 class AggregateControllerQueryProviderTest extends AbstractQueryProviderTest
 {
-    public function testAggregate()
+    public function testAggregate(): void
     {
         $controller = new TestController();
 
@@ -40,7 +40,7 @@ class AggregateControllerQueryProviderTest extends AbstractQueryProviderTest
             }
         };
 
-        $aggregateQueryProvider = new AggregateControllerQueryProvider([ 'controller' ], $this->getControllerQueryProviderFactory(), $this->getTypeMapper(), $container);
+        $aggregateQueryProvider = new AggregateControllerQueryProvider([ 'controller' ], $this->getFieldsBuilder(), $container);
 
         $queries = $aggregateQueryProvider->getQueries();
         $this->assertCount(7, $queries);

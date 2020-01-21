@@ -1,12 +1,14 @@
 <?php
 
+declare(strict_types=1);
 
 namespace TheCodingMachine\GraphQLite\Annotations;
 
 use BadMethodCallException;
-use function class_exists;
 use TheCodingMachine\GraphQLite\Annotations\Exceptions\ClassNotFoundException;
-use TheCodingMachine\GraphQLite\MissingAnnotationException;
+use function class_exists;
+use function interface_exists;
+use function ltrim;
 
 /**
  * The ExtendType annotation must be put in a GraphQL type class docblock and is used to add additional fields to the underlying PHP class.
@@ -15,37 +17,45 @@ use TheCodingMachine\GraphQLite\MissingAnnotationException;
  * @Target({"CLASS"})
  * @Attributes({
  *   @Attribute("class", type = "string"),
+ *   @Attribute("name", type = "string"),
  * })
  */
 class ExtendType
 {
-    /**
-     * @var string
-     */
+    /** @var class-string<object>|null */
     private $class;
+    /** @var string|null */
+    private $name;
 
     /**
      * @param mixed[] $attributes
      */
     public function __construct(array $attributes = [])
     {
-        if (!isset($attributes['class'])) {
-            throw new BadMethodCallException('In annotation @ExtendType, missing compulsory parameter "class".');
+        if (! isset($attributes['class']) && ! isset($attributes['name'])) {
+            throw new BadMethodCallException('In annotation @ExtendType, missing one of the compulsory parameter "class" or "name".');
         }
-        $this->class = $attributes['class'];
-        if (!class_exists($this->class)) {
-            throw ClassNotFoundException::couldNotFindClass($this->class);
+        $class = isset($attributes['class']) ? ltrim($attributes['class'], '\\') : null;
+        $this->name = $attributes['name'] ?? null;
+        if ($class !== null && ! class_exists($class) && ! interface_exists($class)) {
+            throw ClassNotFoundException::couldNotFindClass($class);
         }
+        $this->class = $class;
     }
 
     /**
      * Returns the name of the GraphQL query/mutation/field.
      * If not specified, the name of the method should be used instead.
      *
-     * @return string
+     * @return class-string<object>|null
      */
-    public function getClass(): string
+    public function getClass(): ?string
     {
-        return ltrim($this->class, '\\');
+        return $this->class;
+    }
+
+    public function getName(): ?string
+    {
+        return $this->name;
     }
 }

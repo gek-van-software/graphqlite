@@ -4,13 +4,21 @@
 namespace TheCodingMachine\GraphQLite\Fixtures\Integration\Models;
 
 
+use TheCodingMachine\GraphQLite\Annotations\MagicField;
+use function array_search;
 use DateTimeInterface;
 use Psr\Http\Message\UploadedFileInterface;
+use stdClass;
 use TheCodingMachine\GraphQLite\Annotations\Field;
+use TheCodingMachine\GraphQLite\Annotations\Logged;
+use TheCodingMachine\GraphQLite\Annotations\Parameter;
+use TheCodingMachine\GraphQLite\Annotations\Right;
 use TheCodingMachine\GraphQLite\Annotations\Type;
+use TheCodingMachine\GraphQLite\Annotations\Autowire;
 
 /**
  * @Type()
+ * @MagicField(name="magicContact", phpType="Contact")
  */
 class Contact
 {
@@ -44,10 +52,7 @@ class Contact
         $this->name = $name;
     }
 
-    /**
-     * @return string
-     */
-    public function getName(): string
+    public function getName()
     {
         return $this->name;
     }
@@ -100,7 +105,7 @@ class Contact
     /**
      * @return DateTimeInterface
      */
-    public function getBirthDate(): DateTimeInterface
+    public function getBirthDate()
     {
         return $this->birthDate;
     }
@@ -130,5 +135,78 @@ class Contact
     public function setCompany(string $company): void
     {
         $this->company = $company;
+    }
+
+    /**
+     * @Field(prefetchMethod="prefetchTheContacts")
+     */
+    public function repeatInnerName($data): string
+    {
+        $index = array_search($this, $data, true);
+        if ($index === false) {
+            throw new \RuntimeException('Index not found');
+        }
+        return $data[$index]->getName();
+    }
+
+    public function prefetchTheContacts(iterable $contacts)
+    {
+        return $contacts;
+    }
+
+    /**
+     * @Field()
+     * @Logged()
+     * @return string
+     */
+    public function onlyLogged(): string
+    {
+        return 'you can see this only if you are logged';
+    }
+
+    /**
+     * @Field()
+     * @Right(name="CAN_SEE_SECRET")
+     * @return string
+     */
+    public function secret(): string
+    {
+        return 'you can see this only if you have the good right';
+    }
+
+    /**
+     * @Field()
+     * @Autowire(for="testService", identifier="testService")
+     * @Autowire(for="$otherTestService")
+     * @return string
+     */
+    public function injectService(string $testService, stdClass $otherTestService = null): string
+    {
+        if ($testService !== 'foo') {
+            return 'KO';
+        }
+        if (!$otherTestService instanceof stdClass) {
+            return 'KO';
+        }
+        return 'OK';
+    }
+
+    public function injectServiceFromExternal(string $testService, string $testSkip = "foo", string $id = '42'): string
+    {
+        if ($testService !== 'foo') {
+            return 'KO';
+        }
+        if ($testSkip !== 'foo') {
+            return 'KO';
+        }
+        if ($id !== '42') {
+            return 'KO';
+        }
+        return 'OK';
+    }
+
+    public function __get(string $property)
+    {
+        return new Contact('foo');
     }
 }
